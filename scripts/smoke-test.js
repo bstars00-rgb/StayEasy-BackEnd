@@ -25,6 +25,21 @@ try {
   }).then((r) => r.json())
   if (wallet.data?.summary?.membershipCount !== 0) throw new Error('wallet failed')
 
+  const detail = await fetch(`http://localhost:${port}/api/v1/memberships/hilton-honors-vietnam`).then((r) => r.json())
+  if (!detail.data?.vouchers?.length) throw new Error('membership detail failed')
+
+  const add = await fetch(`http://localhost:${port}/api/v1/wallet/memberships`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.data.accessToken}` },
+    body: JSON.stringify({ membershipId: 'hilton-honors-vietnam' })
+  }).then((r) => r.json())
+  if (add.data?.summary?.membershipCount !== 1) throw new Error('wallet add failed')
+
+  const vouchers = await fetch(`http://localhost:${port}/api/v1/wallet/vouchers`, {
+    headers: { Authorization: `Bearer ${auth.data.accessToken}` }
+  }).then((r) => r.json())
+  if (!vouchers.data?.length) throw new Error('wallet vouchers failed')
+
   console.log('smoke test passed')
 } finally {
   child.kill('SIGTERM')
