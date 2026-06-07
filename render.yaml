@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: stayeasy-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CORS_ORIGIN
+        value: https://bstars00-rgb.github.io
