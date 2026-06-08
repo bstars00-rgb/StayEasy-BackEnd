@@ -107,7 +107,15 @@ function json(res, status, payload) {
 }
 function send(res, status, data) { json(res, status, envelope(data)) }
 function sendError(res, status, code, message, details) { json(res, status, failure(code, message, details)) }
-function noContent(res) { res.writeHead(204, { 'Access-Control-Allow-Origin': process.env.CORS_ORIGIN || '*' }); res.end() }
+function noContent(res) {
+  res.writeHead(204, {
+    'Access-Control-Allow-Origin': process.env.CORS_ORIGIN || '*',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+    'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+    'Access-Control-Max-Age': '600'
+  })
+  res.end()
+}
 async function readBody(req) {
   const chunks = []
   for await (const chunk of req) chunks.push(chunk)
