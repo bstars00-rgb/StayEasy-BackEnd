@@ -124,6 +124,18 @@ function requireUser(req, res) {
   if (!user) sendError(res, 401, 'AUTH_REQUIRED', 'Sign in is required.')
   return user
 }
+function adminEmails() {
+  return new Set(String(process.env.ADMIN_EMAILS || '').split(',').map((email) => email.trim().toLowerCase()).filter(Boolean))
+}
+function requireAdmin(req, res) {
+  const user = requireUser(req, res)
+  if (!user) return null
+  if (!adminEmails().has(String(user.email || '').toLowerCase())) {
+    sendError(res, 403, 'ADMIN_REQUIRED', 'Admin access is required.')
+    return null
+  }
+  return user
+}
 function userState(userId) {
   if (!stateByUser.has(userId)) stateByUser.set(userId, { savedMemberships: [], usage: {}, reservations: [], orders: [], transfers: [] })
   return stateByUser.get(userId)
@@ -170,6 +182,26 @@ function normalizePath(urlPath) {
   const raw = urlPath.replace(/\/+$/, '') || '/'
   return raw.startsWith(API_PREFIX) ? raw.slice(API_PREFIX.length) || '/' : raw
 }
+function allOrders() { return [...stateByUser.values()].flatMap((state) => state.orders) }
+function allReservations() { return [...stateByUser.values()].flatMap((state) => state.reservations) }
+function findOrder(id) {
+  for (const state of stateByUser.values()) {
+    const order = state.orders.find((item) => item.id === id)
+    if (order) return { order, state }
+  }
+  return null
+}
+function findReservation(id) {
+  for (const state of stateByUser.values()) {
+    const reservation = state.reservations.find((item) => item.id === id)
+    if (reservation) return { reservation, state }
+  }
+  return null
+}
+function settlementSummary() {
+  const orders = allOrders().filter((order) => order.status === 'activated')
+  return { gmv: orders.reduce((sum, order) => sum + order.paidAmount, 0), commission: orders.reduce((sum, order) => sum + order.commissionAmount, 0), currency: 'VND', activatedOrderCount: orders.length }
+}
 
 async function route(req, res) {
   if (req.method === 'OPTIONS') return noContent(res)
@@ -209,6 +241,44 @@ async function route(req, res) {
     const membership = getMembership(membershipMatch[1])
     if (!membership) return sendError(res, 404, 'MEMBERSHIP_NOT_FOUND', 'Membership was not found.')
     return send(res, 200, { ...publicMembership(membership), vouchers: getVoucherPack(membership.id) })
+  }
+
+  if (path.startsWith('/admin/')) {
+    const admin = requireAdmin(req, res); if (!admin) return
+    if (req.method === 'GET' && path === '/admin/orders') return send(res, 200, allOrders())
+    const adminOrderStatus = path.match(/^\/admin\/orders\/([^/]+)\/status$/)
+    if (req.method === 'PATCH' && adminOrderStatus) {
+      const found = findOrder(adminOrderStatus[1])
+      if (!found) return sendError(res, 404, 'ORDER_NOT_FOUND', 'Order was not found.')
+      const valid = { requested: ['invoiced', 'cancelled'], invoiced: ['paid', 'cancelled'], paid: ['activated', 'cancelled'], activated: [], cancelled: [] }
+      if (!valid[found.order.status]?.includes(body.status)) return sendError(res, 409, 'INVALID_STATUS_TRANSITION', 'Order status transition is invalid.')
+      found.order.status = body.status; found.order.updatedAt = now()
+      if (body.status === 'activated' && !found.state.savedMemberships.includes(found.order.membershipId)) found.state.savedMemberships.unshift(found.order.membershipId)
+      return send(res, 200, found.order)
+    }
+    if (req.method === 'GET' && path === '/admin/reservations') return send(res, 200, allReservations())
+    const adminReservationStatus = path.match(/^\/admin\/reservations\/([^/]+)\/status$/)
+    if (req.method === 'PATCH' && adminReservationStatus) {
+      const found = findReservation(adminReservationStatus[1])
+      if (!found) return sendError(res, 404, 'RESERVATION_NOT_FOUND', 'Reservation was not found.')
+      const valid = { requested: ['confirmed', 'completed', 'cancelled'], confirmed: ['completed', 'cancelled'], completed: [], cancelled: [] }
+      if (!valid[found.reservation.status]?.includes(body.status)) return sendError(res, 409, 'INVALID_STATUS_TRANSITION', 'Reservation status transition is invalid.')
+      found.reservation.status = body.status; found.reservation.updatedAt = now()
+      if (body.status === 'completed') found.state.usage[usageKey(found.reservation.membershipId, found.reservation.templateId)] = (found.state.usage[usageKey(found.reservation.membershipId, found.reservation.templateId)] || 0) + 1
+      return send(res, 200, found.reservation)
+    }
+    if (req.method === 'GET' && path === '/admin/assistance-requests') return send(res, 200, assistanceRequests)
+    const adminAssistance = path.match(/^\/admin\/assistance-requests\/([^/]+)$/)
+    if (req.method === 'PATCH' && adminAssistance) {
+      const request = assistanceRequests.find((item) => item.id === adminAssistance[1])
+      if (!request) return sendError(res, 404, 'ASSISTANCE_REQUEST_NOT_FOUND', 'Assistance request was not found.')
+      request.status = body.status || request.status
+      request.adminNote = body.adminNote ?? request.adminNote ?? ''
+      request.updatedAt = now()
+      return send(res, 200, request)
+    }
+    if (req.method === 'GET' && path === '/admin/settlements/summary') return send(res, 200, settlementSummary())
+    return sendError(res, 404, 'NOT_FOUND', 'Endpoint was not found.')
   }
 
   const user = ['/wallet', '/reservations', '/orders', '/transfers'].some((p) => path === p || path.startsWith(`${p}/`)) ? requireUser(req, res) : null
@@ -271,10 +341,7 @@ async function route(req, res) {
     if (body.status === 'activated' && !state.savedMemberships.includes(order.membershipId)) state.savedMemberships.unshift(order.membershipId)
     return send(res, 200, order)
   }
-  if (req.method === 'GET' && path === '/settlements/summary') {
-    const orders = [...stateByUser.values()].flatMap((s) => s.orders).filter((o) => o.status === 'activated')
-    return send(res, 200, { gmv: orders.reduce((s, o) => s + o.paidAmount, 0), commission: orders.reduce((s, o) => s + o.commissionAmount, 0), currency: 'VND', activatedOrderCount: orders.length })
-  }
+  if (req.method === 'GET' && path === '/settlements/summary') return send(res, 200, settlementSummary())
 
   if (req.method === 'GET' && path === '/transfers') return send(res, 200, state.transfers)
   if (req.method === 'POST' && path === '/transfers') {
@@ -289,7 +356,7 @@ async function route(req, res) {
   }
 
   if (req.method === 'POST' && path === '/assistance-requests') {
-    const entry = { id: makeId('ast'), ...body, status: 'new', createdAt: now() }
+    const entry = { id: makeId('ast'), ...body, status: 'new', adminNote: '', createdAt: now(), updatedAt: now() }
     assistanceRequests.unshift(entry)
     return send(res, 201, entry)
   }
