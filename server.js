@@ -125,7 +125,8 @@ function requireUser(req, res) {
   return user
 }
 function adminEmails() {
-  return new Set(String(process.env.ADMIN_EMAILS || '').split(',').map((email) => email.trim().toLowerCase()).filter(Boolean))
+  const defaults = 'demo-gle-user@stayeasy.local,demo.user@gmail.com'
+  return new Set(String(process.env.ADMIN_EMAILS || defaults).split(',').map((email) => email.trim().toLowerCase()).filter(Boolean))
 }
 function requireAdmin(req, res) {
   const user = requireUser(req, res)
