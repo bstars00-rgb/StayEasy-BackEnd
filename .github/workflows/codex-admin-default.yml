@@ -43,3 +43,4 @@ jobs:
             git commit -m "Allow demo admin email by default"
             git push
           fi
+# trigger: 2026-06-08
