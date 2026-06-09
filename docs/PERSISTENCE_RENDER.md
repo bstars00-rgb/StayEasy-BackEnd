@@ -50,6 +50,45 @@ The server enables SSL by default for PostgreSQL. If a local database does not u
 PGSSLMODE=disable
 ```
 
+## Normalized schema bootstrap
+
+Step 1 of the no-downtime migration is to create the normalized tables beside the existing `app_state` table. This does **not** switch API reads/writes yet, so the live admin UI keeps working from the current snapshot persistence.
+
+Run from Render Shell after a successful deploy:
+
+```bash
+npm run db:init
+```
+
+Expected output:
+
+```text
+Normalized schema is ready
+```
+
+Tables created by this step:
+
+- `users`
+- `cities`
+- `memberships`
+- `membership_cities`
+- `membership_hotels`
+- `membership_tags`
+- `membership_scores`
+- `voucher_templates`
+- `voucher_template_hotels`
+- `voucher_availability`
+- `holidays`
+- `user_memberships`
+- `voucher_usage`
+- `reservations`
+- `orders`
+- `transfers`
+- `assistance_requests`
+- `audit_logs`
+
+After this step, the next backend migration can dual-write from API mutations into these normalized tables, then switch reads endpoint-by-endpoint while keeping existing response shapes unchanged.
+
 ## Verify
 
 Open:
