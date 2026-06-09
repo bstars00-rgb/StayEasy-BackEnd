@@ -42,11 +42,11 @@ const usersBySubject = new Map()
 const stateByUser = new Map()
 const auditLogs = []
 let pool = null
+let persistenceError = null
 
 function now() { return new Date().toISOString() }
 function makeId(prefix) { return `${prefix}_${randomUUID().slice(0, 8)}` }
-function money(m) { const paidAmount = m.salePrice ?? m.annualFee; return { paidAmount, commissionAmount: Math.round(paidAmount * (m.commissionRate || 0)) } }
-function publicMembership(m) { return { ...m, ...money(m) } }
+function publicMembership(m) { const paidAmount = m.salePrice ?? m.annualFee; return { ...m, paidAmount, commissionAmount: Math.round(paidAmount * (m.commissionRate || 0)) } }
 function getMembership(id, includeInactive = false) { return memberships.find((m) => m.id === id && (includeInactive || m.active !== false)) }
 function getVoucherPack(membershipId) { return voucherPacks[membershipId] || [] }
 function getVoucherTemplate(membershipId, templateId) { return getVoucherPack(membershipId).find((v) => v.templateId === templateId) }
@@ -74,29 +74,29 @@ function currentUser(req) { const auth = req.headers.authorization || ''; const 
 function requireUser(req, res) { const user = currentUser(req); if (!user) sendError(res, 401, 'AUTH_REQUIRED', 'Sign in is required.'); return user }
 function adminEmails() { const defaults = 'demo-gle-user@stayeasy.local,demo.user@gmail.com'; return new Set(String(process.env.ADMIN_EMAILS || defaults).split(',').map((x) => x.trim().toLowerCase()).filter(Boolean)) }
 function roleFor(user) { return adminEmails().has(String(user?.email || '').toLowerCase()) || user?.role === 'admin' ? 'admin' : null }
-function requireAdmin(req, res) { const user = requireUser(req, res); if (!user) return null; const role = roleFor(user); if (!role) { sendError(res, 403, 'ADMIN_REQUIRED', 'Admin access is required.'); return null } return { ...user, role } }
-function seedDemoState(user) { const state = userState(user.id); if (state.seeded) return; const cm = publicMembership(getMembership('club-marriott-vietnam')); const ap = publicMembership(getMembership('accor-plus-vietnam')); state.savedMemberships = ['club-marriott-vietnam', 'accor-plus-vietnam']; state.orders = [ { id: 'ord_demo_activated', membershipId: cm.id, buyerName: user.name, buyerEmail: user.email, buyerPhone: '+84 90 000 0000', city: 'ho-chi-minh', listPrice: cm.annualFee, salePrice: cm.salePrice, paidAmount: cm.paidAmount, currency: cm.currency, commissionRate: cm.commissionRate, commissionAmount: cm.commissionAmount, status: 'activated', invoiceUrl: null, createdAt: now(), updatedAt: now() }, { id: 'ord_demo_paid', membershipId: ap.id, buyerName: 'Minji Kim', buyerEmail: 'minji@example.com', buyerPhone: '+82 10 0000 0000', city: 'da-nang', listPrice: ap.annualFee, salePrice: ap.salePrice, paidAmount: ap.paidAmount, currency: ap.currency, commissionRate: ap.commissionRate, commissionAmount: ap.commissionAmount, status: 'paid', invoiceUrl: null, createdAt: now(), updatedAt: now() } ]; state.reservations = [ { id: 'res_demo_requested', membershipId: cm.id, templateId: 'cm-dinner', title: 'Free Dinner Coupon', date: '2026-07-10', adults: 2, children: 0, childAges: [], hotel: 'Sheraton Saigon Grand Opera Hotel', note: 'Window table preferred', status: 'requested', createdAt: now(), updatedAt: now() }, { id: 'res_demo_confirmed', membershipId: ap.id, templateId: 'ap-stay-night', title: 'Stay Plus Night', date: '2026-08-12', adults: 2, children: 1, childAges: [7], hotel: 'Sofitel Saigon Plaza', note: '', status: 'confirmed', createdAt: now(), updatedAt: now() } ]; state.assistance = [ { id: 'ast_demo_new', userId: user.id, name: user.name, contact: user.email, city: 'ho-chi-minh', membershipId: cm.id, preferredDate: '2026-07-10', adults: 2, children: 0, requestType: 'reservation', message: 'Please help confirm dinner availability.', status: 'new', adminNote: '', createdAt: now(), updatedAt: now() } ]; state.seeded = true }
+function requireAdmin(req, res) { const user = requireUser(req, res); if (!user) return null; if (!roleFor(user)) { sendError(res, 403, 'ADMIN_REQUIRED', 'Admin access is required.'); return null } return { ...user, role: 'admin' } }
+function seedDemoState(user) { const state = userState(user.id); if (state.seeded) return; const cm = publicMembership(getMembership('club-marriott-vietnam')); const ap = publicMembership(getMembership('accor-plus-vietnam')); state.savedMemberships = ['club-marriott-vietnam', 'accor-plus-vietnam']; state.orders = [{ id: 'ord_demo_activated', membershipId: cm.id, buyerName: user.name, buyerEmail: user.email, buyerPhone: '+84 90 000 0000', city: 'ho-chi-minh', listPrice: cm.annualFee, salePrice: cm.salePrice, paidAmount: cm.paidAmount, currency: cm.currency, commissionRate: cm.commissionRate, commissionAmount: cm.commissionAmount, status: 'activated', invoiceUrl: null, createdAt: now(), updatedAt: now() }, { id: 'ord_demo_paid', membershipId: ap.id, buyerName: 'Minji Kim', buyerEmail: 'minji@example.com', buyerPhone: '+82 10 0000 0000', city: 'da-nang', listPrice: ap.annualFee, salePrice: ap.salePrice, paidAmount: ap.paidAmount, currency: ap.currency, commissionRate: ap.commissionRate, commissionAmount: ap.commissionAmount, status: 'paid', invoiceUrl: null, createdAt: now(), updatedAt: now() }]; state.reservations = [{ id: 'res_demo_requested', membershipId: cm.id, templateId: 'cm-dinner', title: 'Free Dinner Coupon', date: '2026-07-10', adults: 2, children: 0, childAges: [], hotel: 'Sheraton Saigon Grand Opera Hotel', note: 'Window table preferred', status: 'requested', createdAt: now(), updatedAt: now() }, { id: 'res_demo_confirmed', membershipId: ap.id, templateId: 'ap-stay-night', title: 'Stay Plus Night', date: '2026-08-12', adults: 2, children: 1, childAges: [7], hotel: 'Sofitel Saigon Plaza', note: '', status: 'confirmed', createdAt: now(), updatedAt: now() }]; state.assistance = [{ id: 'ast_demo_new', userId: user.id, name: user.name, contact: user.email, city: 'ho-chi-minh', membershipId: cm.id, preferredDate: '2026-07-10', adults: 2, children: 0, requestType: 'reservation', message: 'Please help confirm dinner availability.', status: 'new', adminNote: '', createdAt: now(), updatedAt: now() }]; state.seeded = true }
 function createUser(credential) { const subject = ['demo-google-user', 'demo.user@gmail.com'].includes(String(credential)) ? 'demo-google-user' : String(credential || 'demo-google-user'); if (usersBySubject.has(subject)) { const existing = usersBySubject.get(subject); seedDemoState(existing); return existing } const email = subject === 'demo-google-user' ? 'demo.user@gmail.com' : `demo-${subject.slice(-8)}@stayeasy.local`; const user = { id: makeId('usr'), provider: 'google', providerSubject: subject, name: subject === 'demo-google-user' ? 'Demo User' : 'StayEasy Demo User', email, picture: '', createdAt: now(), updatedAt: now() }; usersBySubject.set(subject, user); seedDemoState(user); return user }
 function settlementSummary() { const orders = allOrders().filter((o) => o.status === 'activated'); return { gmv: orders.reduce((s, o) => s + o.paidAmount, 0), commission: orders.reduce((s, o) => s + o.commissionAmount, 0), activatedOrderCount: orders.length, currency: 'VND' } }
 function toCsv(cols, rows) { const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`; return [cols.join(','), ...rows.map((r) => cols.map((c) => esc(r[c])).join(','))].join('\n') }
 function snapshot() { return { memberships, voucherPacks, users: [...usersBySubject.entries()], states: [...stateByUser.entries()], auditLogs } }
 function restore(s) { if (!s) return; memberships = s.memberships || memberships; voucherPacks = s.voucherPacks || voucherPacks; usersBySubject.clear(); for (const [k, v] of s.users || []) usersBySubject.set(k, v); stateByUser.clear(); for (const [k, v] of s.states || []) stateByUser.set(k, v); auditLogs.splice(0, auditLogs.length, ...(s.auditLogs || [])) }
-async function initPersistence() { if (!process.env.DATABASE_URL) return; pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false } }); await pool.query('CREATE TABLE IF NOT EXISTS app_state (key text PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())'); const row = await pool.query('SELECT value FROM app_state WHERE key=$1', [DB_KEY]); if (row.rows[0]) restore(row.rows[0].value); console.log('StayEasy persistence enabled: Postgres') }
-async function saveSnapshot() { if (!pool) return; await pool.query('INSERT INTO app_state (key,value,updated_at) VALUES ($1,$2,now()) ON CONFLICT (key) DO UPDATE SET value=excluded.value, updated_at=now()', [DB_KEY, snapshot()]) }
+async function initPersistence() { if (!process.env.DATABASE_URL) return; try { pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false } }); await pool.query('CREATE TABLE IF NOT EXISTS app_state (key text PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())'); const row = await pool.query('SELECT value FROM app_state WHERE key=$1', [DB_KEY]); if (row.rows[0]) restore(row.rows[0].value); persistenceError = null; console.log('StayEasy persistence enabled: Postgres') } catch (err) { persistenceError = err.message; console.error('StayEasy persistence disabled:', err.message); try { await pool?.end() } catch {} pool = null } }
+async function saveSnapshot() { if (!pool) return; try { await pool.query('INSERT INTO app_state (key,value,updated_at) VALUES ($1,$2,now()) ON CONFLICT (key) DO UPDATE SET value=excluded.value, updated_at=now()', [DB_KEY, snapshot()]) } catch (err) { persistenceError = err.message; console.error('StayEasy persistence save failed:', err.message) } }
 
 async function route(req, res) {
   if (req.method === 'OPTIONS') return noContent(res)
   const url = new URL(req.url, `http://${req.headers.host}`)
   const path = normalizePath(url.pathname)
   const body = ['POST', 'PATCH', 'PUT'].includes(req.method) ? await readBody(req) : {}
+  const health = { ok: true, service: 'stayeasy-backend', persistence: pool ? 'postgres' : 'memory', ...(persistenceError ? { persistenceError } : {}), time: now() }
 
-  if (req.method === 'GET' && path === '/') return send(res, 200, { ok: true, service: 'stayeasy-backend', persistence: pool ? 'postgres' : 'memory', docs: '/api/v1/health' })
-  if (req.method === 'GET' && path === '/health') return send(res, 200, { ok: true, service: 'stayeasy-backend', persistence: pool ? 'postgres' : 'memory', time: now() })
+  if (req.method === 'GET' && path === '/') return send(res, 200, { ...health, docs: '/api/v1/health' })
+  if (req.method === 'GET' && path === '/health') return send(res, 200, health)
   if (req.method === 'GET' && path === '/cities') return send(res, 200, cities)
   if (req.method === 'POST' && path === '/auth/google') { const user = createUser(body.idToken || body.credential); const accessToken = `demo_${randomUUID()}`; usersByToken.set(accessToken, user); return send(res, 200, { accessToken, refreshToken: accessToken, token: accessToken, user }) }
   if (req.method === 'GET' && (path === '/auth/me' || path === '/me')) { const user = requireUser(req, res); if (!user) return; return send(res, 200, user) }
   if (req.method === 'POST' && path === '/auth/logout') return noContent(res)
-
   if (req.method === 'GET' && path === '/memberships') return send(res, 200, memberships.filter((m) => m.active !== false).map(publicMembership).sort((a, b) => b.scores.overall - a.scores.overall))
   if (req.method === 'GET' && path === '/memberships/compare') { const ids = (url.searchParams.get('ids') || '').split(',').filter(Boolean).slice(0, 3); return send(res, 200, ids.map((id) => getMembership(id)).filter(Boolean).map(publicMembership)) }
   const membershipVoucherMatch = path.match(/^\/memberships\/([^/]+)\/vouchers$/)
@@ -138,11 +138,7 @@ async function route(req, res) {
   return sendError(res, 404, 'NOT_FOUND', 'Endpoint was not found.')
 }
 
-async function handle(req, res) {
-  await route(req, res)
-  if (['POST', 'PATCH', 'DELETE', 'PUT'].includes(req.method)) await saveSnapshot()
-}
-
+async function handle(req, res) { await route(req, res); if (['POST', 'PATCH', 'DELETE', 'PUT'].includes(req.method)) await saveSnapshot() }
 await initPersistence()
 const server = http.createServer((req, res) => { handle(req, res).catch((err) => { console.error(err); sendError(res, 500, 'INTERNAL_ERROR', 'Unexpected server error.') }) })
 server.listen(PORT, '0.0.0.0', () => { console.log(`StayEasy backend listening on http://0.0.0.0:${PORT}`) })
