@@ -1,7 +1,10 @@
 import http from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { URL } from 'node:url'
+import dns from 'node:dns'
 import pg from 'pg'
+
+dns.setDefaultResultOrder('ipv4first')
 
 const { Pool } = pg
 const PORT = Number(process.env.PORT || 8787)
