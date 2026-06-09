@@ -54,6 +54,20 @@ PGSSLMODE=disable
 
 Step 1 of the no-downtime migration is to create the normalized tables beside the existing `app_state` table. This does **not** switch API reads/writes yet, so the live admin UI keeps working from the current snapshot persistence.
 
+### Option A: Supabase SQL Editor, recommended for free Render
+
+Render Shell is not available on free instance types. Use this path instead:
+
+1. Open Supabase project.
+2. Go to `SQL Editor`.
+3. Open `sql/normalized-schema.sql` from this repo.
+4. Paste the whole SQL into Supabase SQL Editor.
+5. Click `Run`.
+
+Expected result: the query completes without errors and the tables below appear in Supabase Table Editor.
+
+### Option B: Render Shell, paid Render instances only
+
 Run from Render Shell after a successful deploy:
 
 ```bash
