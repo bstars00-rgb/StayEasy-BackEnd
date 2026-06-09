@@ -1,4 +1,8 @@
-CREATE TABLE IF NOT EXISTS users (
+-- Supabase-compatible bootstrap.
+-- This file intentionally does not add foreign keys from app user_id columns to public.users.
+-- Some Supabase projects already have public.users.id as uuid, while the current prototype uses text IDs.
+
+CREATE TABLE IF NOT EXISTS app_users (
   id text PRIMARY KEY,
   provider text NOT NULL DEFAULT 'google',
   provider_subject text UNIQUE,
@@ -121,7 +125,7 @@ CREATE TABLE IF NOT EXISTS holidays (
 
 CREATE TABLE IF NOT EXISTS user_memberships (
   id text PRIMARY KEY,
-  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id text NOT NULL,
   membership_id text NOT NULL REFERENCES memberships(id),
   source text NOT NULL,
   status text NOT NULL DEFAULT 'active',
@@ -134,7 +138,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS user_memberships_active_idx
   WHERE status = 'active';
 
 CREATE TABLE IF NOT EXISTS voucher_usage (
-  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id text NOT NULL,
   membership_id text NOT NULL REFERENCES memberships(id),
   template_id text NOT NULL,
   used_count integer NOT NULL DEFAULT 0,
@@ -144,7 +148,7 @@ CREATE TABLE IF NOT EXISTS voucher_usage (
 
 CREATE TABLE IF NOT EXISTS reservations (
   id text PRIMARY KEY,
-  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id text NOT NULL,
   membership_id text NOT NULL REFERENCES memberships(id),
   template_id text NOT NULL,
   title text NOT NULL,
@@ -161,7 +165,7 @@ CREATE TABLE IF NOT EXISTS reservations (
 
 CREATE TABLE IF NOT EXISTS orders (
   id text PRIMARY KEY,
-  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id text NOT NULL,
   membership_id text NOT NULL REFERENCES memberships(id),
   buyer_name text NOT NULL,
   buyer_email text NOT NULL,
@@ -181,7 +185,7 @@ CREATE TABLE IF NOT EXISTS orders (
 
 CREATE TABLE IF NOT EXISTS transfers (
   id text PRIMARY KEY,
-  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id text NOT NULL,
   membership_id text NOT NULL REFERENCES memberships(id),
   template_id text NOT NULL,
   title text NOT NULL,
@@ -193,7 +197,7 @@ CREATE TABLE IF NOT EXISTS transfers (
 
 CREATE TABLE IF NOT EXISTS assistance_requests (
   id text PRIMARY KEY,
-  user_id text REFERENCES users(id) ON DELETE SET NULL,
+  user_id text,
   name text,
   contact text,
   city_id text,
