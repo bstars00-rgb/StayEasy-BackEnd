@@ -1,162 +1,120 @@
 import http from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { URL } from 'node:url'
-import dns from 'node:dns'
-import { resolve4 } from 'node:dns/promises'
-import pg from 'pg'
+import { OhmySelectStore } from './db.js'
 
-dns.setDefaultResultOrder('ipv4first')
-const { Pool } = pg
 const PORT = Number(process.env.PORT || 8787)
 const API_PREFIX = '/api/v1'
-const DB_KEY = 'stayeasy-backoffice-state-v2'
-const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6]
-const WEEKDAYS = [1, 2, 3, 4, 5]
+const store = await OhmySelectStore.open()
 
-const cities = [
-  { id: 'ho-chi-minh', country: 'vietnam' }, { id: 'da-nang', country: 'vietnam' },
-  { id: 'hanoi', country: 'vietnam' }, { id: 'seoul', country: 'korea' },
-  { id: 'bangkok', country: 'thailand' }, { id: 'tokyo', country: 'japan' },
-]
-let memberships = [
-  { id:'club-marriott-vietnam', name:'Club Marriott Vietnam', brand:'Marriott', country:'vietnam', cities:['ho-chi-minh','da-nang','hanoi'], hotels:['Sheraton Saigon Grand Opera Hotel','Le Meridien Saigon'], annualFee:4500000, salePrice:4200000, currency:'VND', commissionRate:0.12, diningDiscount:50, roomDiscount:20, freeNight:false, spaBenefit:true, benefits:['Up to 50% off food'], bestFor:['familyDining','hotelBuffet','staycation'], estimatedSavings:12000000, scores:{familyDining:95,staycation:80,businessTravel:60,easeOfUse:85,overall:90}, notes:'Strong pick for hotel dining in Vietnam.', officialUrl:'https://www.clubmarriott.asia/', active:true },
-  { id:'accor-plus-vietnam', name:'Accor Plus Vietnam', brand:'Accor', country:'vietnam', cities:['ho-chi-minh','da-nang','hanoi','bangkok'], hotels:['Sofitel Saigon Plaza','Pullman Saigon Centre'], annualFee:4900000, salePrice:4500000, currency:'VND', commissionRate:0.12, diningDiscount:50, roomDiscount:10, freeNight:true, spaBenefit:false, benefits:['One complimentary stay night','Up to 50% off dining'], bestFor:['familyDining','staycation','freeNight'], estimatedSavings:13000000, scores:{familyDining:88,staycation:90,businessTravel:70,easeOfUse:80,overall:89}, notes:'Includes a free stay night.', officialUrl:'https://www.accorplus.com/', active:true },
-  { id:'hilton-honors-vietnam', name:'Hilton Honors Vietnam', brand:'Hilton', country:'vietnam', cities:['ho-chi-minh','da-nang'], hotels:['Hilton Saigon','Hilton Da Nang'], annualFee:0, salePrice:null, currency:'VND', commissionRate:0, diningDiscount:null, roomDiscount:null, freeNight:true, spaBenefit:false, benefits:['Free to join','Earn points'], bestFor:['businessTravel','staycation','freeNight'], estimatedSavings:6000000, scores:{familyDining:55,staycation:78,businessTravel:90,easeOfUse:92,overall:84}, notes:'Free loyalty program.', officialUrl:'https://www.hilton.com/en/hilton-honors/', active:true },
-]
-let voucherPacks = {
-  'club-marriott-vietnam': [
-    { templateId:'cm-stay2', category:'room', title:'Free 2-Night Stay', description:'Two complimentary nights.', quantity:1, validUntil:'2026-11-30', hotels:['Sheraton Saigon Grand Opera Hotel'], city:'ho-chi-minh', transferable:false, note:'Reservation required.' },
-    { templateId:'cm-breakfast', category:'dining', title:'Free Breakfast Coupon', description:'Breakfast voucher.', quantity:3, validUntil:'2026-11-30', hotels:[], transferable:true, note:'One person per coupon.' },
-    { templateId:'cm-dinner', category:'dining', title:'Free Dinner Coupon', description:'Set dinner benefit.', quantity:2, validUntil:'2026-11-30', hotels:[], transferable:true, note:'Set menu only.' },
-    { templateId:'cm-fnb50', category:'discount', title:'50% Off Food & Beverage', description:'Half off F&B.', quantity:3, validUntil:'2026-06-20', hotels:[], transferable:true, note:'Weekdays only.' },
-  ],
-  'accor-plus-vietnam': [
-    { templateId:'ap-stay1', category:'room', title:'Complimentary Stay Night', description:'One complimentary night.', quantity:1, validUntil:'2026-12-31', hotels:['Sofitel Saigon Plaza'], transferable:false, note:'Subject to availability.' },
-    { templateId:'ap-dining50', category:'discount', title:'50% Off Dining', description:'Half off dining.', quantity:4, validUntil:'2026-12-31', hotels:[], transferable:true, note:'Weekdays only.' },
-    { templateId:'ap-breakfast', category:'dining', title:'Free Breakfast for Two', description:'Breakfast for two.', quantity:2, validUntil:'2026-07-15', hotels:[], transferable:true, note:'Valid with paid stay.' },
-  ],
-  'hilton-honors-vietnam': [
-    { templateId:'hh-lateco', category:'room', title:'Late Check-out', description:'Late check-out.', quantity:3, validUntil:'2026-12-31', hotels:[], transferable:false, note:'Subject to availability.' },
-    { templateId:'hh-fnb15', category:'discount', title:'15% Off Food & Beverage', description:'15% off F&B.', quantity:5, validUntil:'2026-12-31', hotels:[], transferable:true, note:'' },
-  ],
-}
-let availabilityRules = {}
-let holidays = [
-  { id:'hol_vn_tet_2026', country:'vietnam', from:'2026-02-14', to:'2026-02-22', key:'tet', label:'Tet 2026' },
-  { id:'hol_kr_seollal_2026', country:'korea', from:'2026-02-16', to:'2026-02-18', key:'seollal', label:'Seollal 2026' },
-]
-let auditLogs = []
-const usersByToken = new Map()
-const usersBySubject = new Map()
-const stateByUser = new Map()
-let pool = null
-let persistenceError = null
-
-function now(){return new Date().toISOString()}
-function makeId(prefix){return `${prefix}_${randomUUID().slice(0,8)}`}
-function headers(extra={}){return {'Content-Type':'application/json; charset=utf-8','Access-Control-Allow-Origin':process.env.CORS_ORIGIN||'*','Access-Control-Allow-Headers':'Authorization, Content-Type','Access-Control-Allow-Methods':'GET, POST, PATCH, DELETE, OPTIONS','Access-Control-Max-Age':'600',...extra}}
-function send(res,status,data){res.writeHead(status,headers());res.end(JSON.stringify(data))}
-function noContent(res){res.writeHead(204,headers());res.end()}
-function sendCsv(res,name,data){res.writeHead(200,headers({'Content-Type':'text/csv; charset=utf-8','Content-Disposition':`attachment; filename="${name}"`}));res.end(data)}
-function sendError(res,status,code,message,details={}){send(res,status,{code,message,details})}
-function normalizePath(pathname){const raw=pathname.replace(/\/+$/,'')||'/';return raw.startsWith(API_PREFIX)?raw.slice(API_PREFIX.length)||'/':raw}
-async function readBody(req){const chunks=[];for await(const c of req)chunks.push(c);if(!chunks.length)return{};try{return JSON.parse(Buffer.concat(chunks).toString('utf8'))}catch{return{}}}
-function publicMembership(m){const paidAmount=m.salePrice??m.annualFee;return{...m,paidAmount,commissionAmount:Math.round(paidAmount*(m.commissionRate||0))}}
-function getMembership(id, includeInactive=false){return memberships.find(m=>m.id===id&&(includeInactive||m.active!==false))}
-function getVoucherPack(id){return voucherPacks[id]||[]}
-function findVoucher(templateId){for(const [membershipId,pack] of Object.entries(voucherPacks)){const v=pack.find(x=>x.templateId===templateId);if(v)return{membershipId,v}}return null}
-function userState(id){if(!stateByUser.has(id))stateByUser.set(id,{savedMemberships:[],usage:{},reservations:[],orders:[],transfers:[],assistance:[],seeded:false});return stateByUser.get(id)}
-function allStates(){return[...stateByUser.values()]}
-function allOrders(){return allStates().flatMap(s=>s.orders)}
-function allReservations(){return allStates().flatMap(s=>s.reservations)}
-function allAssistance(){return allStates().flatMap(s=>s.assistance||[])}
-function usageKey(m,t){return`${m}:${t}`}
-function voucherView(st,membershipId,t){const used=st.usage[usageKey(membershipId,t.templateId)]||0;const held=st.reservations.filter(r=>r.membershipId===membershipId&&r.templateId===t.templateId&&['requested','confirmed'].includes(r.status)).length;const transferred=st.transfers.filter(x=>x.membershipId===membershipId&&x.templateId===t.templateId).length;return{membershipId,...t,used,held,transferred,available:Math.max(0,t.quantity-used-held-transferred)}}
-function walletFor(user){const st=userState(user.id);const owned=st.savedMemberships.map(id=>getMembership(id)).filter(Boolean).map(publicMembership);const vouchers=st.savedMemberships.flatMap(id=>getVoucherPack(id).map(t=>voucherView(st,id,t)));return{summary:{membershipCount:owned.length,availableVoucherCount:vouchers.reduce((s,v)=>s+v.available,0),expiringSoonCount:vouchers.filter(v=>v.available>0).length,openReservationCount:st.reservations.filter(r=>['requested','confirmed'].includes(r.status)).length},memberships:owned,vouchers,reservations:st.reservations,orders:st.orders,transfers:st.transfers}}
-function adminEmails(){const defaults='demo.user@gmail.com,demo-gle-user@stayeasy.local';return new Set(String(process.env.ADMIN_EMAILS||defaults).split(',').map(x=>x.trim().toLowerCase()).filter(Boolean))}
-function operatorEmails(){return new Set(String(process.env.OPERATOR_EMAILS||'').split(',').map(x=>x.trim().toLowerCase()).filter(Boolean))}
-function currentUser(req){const auth=req.headers.authorization||'';const token=auth.startsWith('Bearer ')?auth.slice(7):'';return usersByToken.get(token)||null}
-function requireUser(req,res){const u=currentUser(req);if(!u){sendError(res,401,'AUTH_REQUIRED','Sign in is required.');return null}return u}
-function roleFor(user){const email=String(user?.email||'').toLowerCase();if(adminEmails().has(email)||user?.role==='admin')return'admin';if(operatorEmails().has(email)||user?.role==='operator')return'operator';return null}
-function requireBackoffice(req,res,minRole='operator'){const u=requireUser(req,res);if(!u)return null;const role=roleFor(u);if(!role||(minRole==='admin'&&role!=='admin')){sendError(res,403,'ADMIN_REQUIRED','Admin access is required.');return null}return{...u,role}}
-function audit(actor,action,targetType,targetId,before,after){auditLogs.unshift({id:makeId('aud'),actorEmail:actor?.email||'system',action,targetType,targetId,before,after,createdAt:now()})}
-function seedDemoState(user){const st=userState(user.id);if(st.seeded)return;const cm=publicMembership(getMembership('club-marriott-vietnam'));const ap=publicMembership(getMembership('accor-plus-vietnam'));st.savedMemberships=[cm.id,ap.id];st.orders=[{id:'ord_demo_activated',membershipId:cm.id,buyerName:user.name,buyerEmail:user.email,buyerPhone:'+84 90 000 0000',city:'ho-chi-minh',listPrice:cm.annualFee,salePrice:cm.salePrice,paidAmount:cm.paidAmount,currency:cm.currency,commissionRate:cm.commissionRate,commissionAmount:cm.commissionAmount,status:'activated',invoiceUrl:null,createdAt:now(),updatedAt:now()},{id:'ord_demo_paid',membershipId:ap.id,buyerName:'Minji Kim',buyerEmail:'minji@example.com',buyerPhone:'+82 10 0000 0000',city:'da-nang',listPrice:ap.annualFee,salePrice:ap.salePrice,paidAmount:ap.paidAmount,currency:ap.currency,commissionRate:ap.commissionRate,commissionAmount:ap.commissionAmount,status:'paid',invoiceUrl:null,createdAt:now(),updatedAt:now()}];st.reservations=[{id:'res_demo_requested',membershipId:cm.id,templateId:'cm-dinner',title:'Free Dinner Coupon',date:'2026-07-10',adults:2,children:0,childAges:[],hotel:'Sheraton Saigon Grand Opera Hotel',note:'Window table preferred',status:'requested',createdAt:now(),updatedAt:now()},{id:'res_demo_confirmed',membershipId:ap.id,templateId:'ap-stay1',title:'Complimentary Stay Night',date:'2026-08-12',adults:2,children:1,childAges:[7],hotel:'Sofitel Saigon Plaza',note:'',status:'confirmed',createdAt:now(),updatedAt:now()}];st.assistance=[{id:'ast_demo_new',userId:user.id,name:user.name,contact:user.email,city:'ho-chi-minh',membershipId:cm.id,preferredDate:'2026-07-10',adults:2,children:0,requestType:'reservation',message:'Please help confirm dinner availability.',status:'new',adminNote:'',createdAt:now(),updatedAt:now()}];st.seeded=true}
-function createUser(credential){const subject=['demo-google-user','demo.user@gmail.com'].includes(String(credential))?'demo-google-user':String(credential||'demo-google-user');if(usersBySubject.has(subject)){const u=usersBySubject.get(subject);seedDemoState(u);return u}const email=subject==='demo-google-user'?'demo.user@gmail.com':`demo-${subject.slice(-8)}@stayeasy.local`;const user={id:makeId('usr'),provider:'google',providerSubject:subject,name:subject==='demo-google-user'?'Demo User':'StayEasy Demo User',email,picture:'',createdAt:now(),updatedAt:now()};usersBySubject.set(subject,user);seedDemoState(user);return user}
-function settlementSummary(params=new URLSearchParams()){const brand=params.get?.('brand');let orders=allOrders().filter(o=>o.status==='activated');if(brand)orders=orders.filter(o=>getMembership(o.membershipId,true)?.brand===brand);const byBrand=Object.values(orders.reduce((a,o)=>{const k=o.membershipId;a[k]??={membershipId:k,gmv:0,commission:0,orders:0};a[k].gmv+=o.paidAmount;a[k].commission+=o.commissionAmount;a[k].orders+=1;return a},{}));const byPeriod=Object.values(orders.reduce((a,o)=>{const k=String(o.createdAt).slice(0,10);a[k]??={date:k,gmv:0,commission:0};a[k].gmv+=o.paidAmount;a[k].commission+=o.commissionAmount;return a},{}));return{gmv:orders.reduce((s,o)=>s+o.paidAmount,0),commission:orders.reduce((s,o)=>s+o.commissionAmount,0),activatedOrderCount:orders.length,currency:'VND',byBrand,byPeriod}}
-function byStatus(items,statuses){return Object.fromEntries(statuses.map(s=>[s,items.filter(i=>i.status===s).length]))}
-function dashboard(){const orders=allOrders(), reservations=allReservations(), assistance=allAssistance();const activated=orders.filter(o=>o.status==='activated');return{currency:'VND',gmv:activated.reduce((s,o)=>s+o.paidAmount,0),commission:activated.reduce((s,o)=>s+o.commissionAmount,0),orders:{total:orders.length,byStatus:byStatus(orders,['requested','invoiced','paid','activated','cancelled'])},reservations:{total:reservations.length,byStatus:byStatus(reservations,['requested','confirmed','completed','cancelled'])},assistance:{open:assistance.filter(a=>!['resolved','handled','cancelled'].includes(a.status)).length,handled:assistance.filter(a=>['resolved','handled'].includes(a.status)).length},activeMemberships:allStates().reduce((s,st)=>s+st.savedMemberships.length,0),expiringVouchers:0}}
-function defaultAvailability(templateId){const found=findVoucher(templateId);const category=found?.v?.category||'other';const base={daysOfWeek:ALL_DAYS,minLeadDays:category==='room'?2:0,maxAdvanceDays:category==='room'?180:120,blackouts:[]};if(['cm-fnb50','ap-dining50'].includes(templateId))base.daysOfWeek=WEEKDAYS;if(['cm-stay2'].includes(templateId))base.minLeadDays=3;return{...base,validUntil:found?.v?.validUntil||'2026-12-31'}}
-function availability(templateId){const own=availabilityRules[templateId]||defaultAvailability(templateId);const found=findVoucher(templateId);const country=getMembership(found?.membershipId,true)?.country;const countryHolidays=holidays.filter(h=>!country||h.country===country).map(h=>({from:h.from,to:h.to,key:h.key,label:h.label}));return{...own,blackouts:[...(own.blackouts||[]),...countryHolidays],validUntil:own.validUntil||found?.v?.validUntil||'2026-12-31'}}
-function checkDate(membershipId,templateId,iso){const found=findVoucher(templateId);if(!found||found.membershipId!==membershipId)return{ok:false,reason:'closed'};const d=new Date(`${iso}T00:00:00Z`);if(Number.isNaN(d.getTime()))return{ok:false,reason:'invalid'};const rule=availability(templateId);const today=new Date();const lead=Math.floor((Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate())-Date.UTC(today.getUTCFullYear(),today.getUTCMonth(),today.getUTCDate()))/86400000);if(lead<(rule.minLeadDays||0))return{ok:false,reason:'leadTime'};if(rule.maxAdvanceDays!=null&&lead>rule.maxAdvanceDays)return{ok:false,reason:'tooFar'};if(rule.validUntil&&iso>rule.validUntil)return{ok:false,reason:'expired'};for(const b of rule.blackouts||[])if(iso>=b.from&&iso<=b.to)return{ok:false,reason:'blackout',holidayKey:b.key};const dow=d.getUTCDay();if(!(rule.daysOfWeek||ALL_DAYS).includes(dow))return{ok:false,reason:dow===0||dow===6?'weekend':'closed'};return{ok:true}}
-function csv(cols,rows){const esc=v=>`"${String(v??'').replace(/"/g,'""')}"`;return[cols.join(','),...rows.map(r=>cols.map(c=>esc(r[c])).join(','))].join('\n')}
-function page(items,params){const p=Math.max(1,Number(params.get('page')||1));const ps=Math.min(100,Math.max(1,Number(params.get('pageSize')||20)));return{items:items.slice((p-1)*ps,(p-1)*ps+ps),meta:{page:p,pageSize:ps,total:items.length}}}
-function snapshot(){return{memberships,voucherPacks,availabilityRules,holidays,auditLogs,users:[...usersBySubject.entries()],states:[...stateByUser.entries()]}}
-function restore(s){if(!s)return;memberships=s.memberships||memberships;voucherPacks=s.voucherPacks||voucherPacks;availabilityRules=s.availabilityRules||availabilityRules;holidays=s.holidays||holidays;auditLogs=s.auditLogs||auditLogs;usersBySubject.clear();for(const [k,v] of s.users||[])usersBySubject.set(k,v);stateByUser.clear();for(const [k,v] of s.states||[])stateByUser.set(k,v)}
-async function makePgPool(connectionString){const dbUrl=new URL(connectionString);const originalHost=dbUrl.hostname;let host=originalHost;try{const[ip]=await resolve4(originalHost);if(ip)host=ip}catch{}return new Pool({user:decodeURIComponent(dbUrl.username),password:decodeURIComponent(dbUrl.password),host,port:Number(dbUrl.port||5432),database:dbUrl.pathname.replace(/^\//,'')||'postgres',ssl:process.env.PGSSLMODE==='disable'?false:{rejectUnauthorized:false,servername:originalHost}})}
-async function initPersistence(){if(!process.env.DATABASE_URL)return;try{pool=await makePgPool(process.env.DATABASE_URL);await pool.query('CREATE TABLE IF NOT EXISTS app_state (key text PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())');const row=await pool.query('SELECT value FROM app_state WHERE key=$1',[DB_KEY]);if(row.rows[0])restore(row.rows[0].value);persistenceError=null;console.log('StayEasy persistence enabled: Postgres')}catch(e){persistenceError=e.message;console.error('StayEasy persistence disabled:',e.message);try{await pool?.end()}catch{}pool=null}}
-async function saveSnapshot(){if(!pool)return;try{await pool.query('INSERT INTO app_state (key,value,updated_at) VALUES ($1,$2,now()) ON CONFLICT (key) DO UPDATE SET value=excluded.value, updated_at=now()',[DB_KEY,snapshot()])}catch(e){persistenceError=e.message;console.error('StayEasy persistence save failed:',e.message)}}
+function now() { return new Date().toISOString() }
+function makeId(prefix) { return `${prefix}_${randomUUID().slice(0, 8)}` }
+function headers(extra = {}) { return { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': process.env.CORS_ORIGIN || '*', 'Access-Control-Allow-Headers': 'Authorization, Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS', 'Access-Control-Max-Age': '600', ...extra } }
+function json(res, status, payload) { res.writeHead(status, headers()); res.end(JSON.stringify(payload)) }
+function csv(res, filename, payload) { res.writeHead(200, headers({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${filename}"` })); res.end(payload) }
+function noContent(res) { res.writeHead(204, headers()); res.end() }
+function error(res, status, code, message, details = {}) { json(res, status, { code, message, details }) }
+function statusFor(code) { return { AUTH_REQUIRED:401, ADMIN_REQUIRED:403, FORBIDDEN:403, NOT_FOUND:404, MEMBERSHIP_NOT_FOUND:404, VOUCHER_NOT_FOUND:404, ORDER_NOT_FOUND:404, RESERVATION_NOT_FOUND:404, ASSISTANCE_REQUEST_NOT_FOUND:404, VOUCHER_NOT_AVAILABLE:409, VOUCHER_NOT_TRANSFERABLE:409, INVALID_STATUS_TRANSITION:409, DATE_NOT_AVAILABLE:409, VALIDATION_ERROR:400 }[code] || 500 }
+async function readBody(req) { const chunks=[]; for await (const c of req) chunks.push(c); if(!chunks.length)return {}; try{return JSON.parse(Buffer.concat(chunks).toString('utf8'))}catch{return {}} }
+async function currentUser(req) { const h=req.headers.authorization||''; const token=h.startsWith('Bearer ')?h.slice(7):''; return token ? store.userByToken(token) : null }
+async function requireUser(req,res){const user=await currentUser(req); if(!user){error(res,401,'AUTH_REQUIRED','Sign in is required.'); return null} return user}
+function adminEmails(){return new Set(String(process.env.ADMIN_EMAILS||'').split(',').map(v=>v.trim().toLowerCase()).filter(Boolean))}
+function operatorEmails(){return new Set(String(process.env.OPERATOR_EMAILS||'').split(',').map(v=>v.trim().toLowerCase()).filter(Boolean))}
+function roleFor(user){const email=String(user?.email||'').toLowerCase(); if(adminEmails().has(email)||user?.role==='admin')return 'admin'; if(operatorEmails().has(email))return 'operator'; return null}
+function withEffectiveRole(user){return user ? {...user, role: roleFor(user)} : user}
+async function requireBackoffice(req,res,minRole='operator'){const user=await requireUser(req,res); if(!user)return null; const role=roleFor(user); if(!role||(minRole==='admin'&&role!=='admin')){error(res,403,'ADMIN_REQUIRED','Admin access is required.'); return null} return {...user, role}}
+async function requireAdmin(req,res){return requireBackoffice(req,res,'admin')}
+function normalizePath(pathname){const raw=pathname.replace(/\/+$/,'')||'/'; return raw.startsWith(API_PREFIX)?raw.slice(API_PREFIX.length)||'/':raw}
 
 async function route(req,res){
-  if(req.method==='OPTIONS')return noContent(res)
-  const url=new URL(req.url,`http://${req.headers.host}`), path=normalizePath(url.pathname), body=['POST','PATCH','PUT'].includes(req.method)?await readBody(req):{}
-  const health={ok:true,service:'stayeasy-backend',persistence:pool?'postgres':'memory',...(persistenceError?{persistenceError}:{}),time:now()}
-  if(req.method==='GET'&&path==='/')return send(res,200,{...health,docs:'/api/v1/health'})
-  if(req.method==='GET'&&path==='/health')return send(res,200,health)
-  if(req.method==='GET'&&path==='/cities')return send(res,200,cities)
-  if(req.method==='POST'&&path==='/auth/google'){const user=createUser(body.idToken||body.credential);const token=`demo_${randomUUID()}`;usersByToken.set(token,user);return send(res,200,{accessToken:token,refreshToken:token,token,user})}
-  if(req.method==='GET'&&(path==='/auth/me'||path==='/me')){const u=requireUser(req,res);if(!u)return;return send(res,200,u)}
-  if(req.method==='POST'&&path==='/auth/logout')return noContent(res)
-  if(req.method==='GET'&&path==='/memberships')return send(res,200,memberships.filter(m=>m.active!==false).map(publicMembership))
-  if(req.method==='GET'&&path==='/memberships/compare'){const ids=(url.searchParams.get('ids')||'').split(',').filter(Boolean).slice(0,3);return send(res,200,ids.map(id=>getMembership(id)).filter(Boolean).map(publicMembership))}
-  const mv=path.match(/^\/memberships\/([^/]+)\/vouchers$/);if(req.method==='GET'&&mv)return send(res,200,getVoucherPack(mv[1]))
-  const mm=path.match(/^\/memberships\/([^/]+)$/);if(req.method==='GET'&&mm){const m=getMembership(mm[1]);if(!m)return sendError(res,404,'MEMBERSHIP_NOT_FOUND','Membership was not found.');return send(res,200,{...publicMembership(m),vouchers:getVoucherPack(m.id)})}
-  const pav=path.match(/^\/vouchers\/([^/]+)\/availability$/);if(req.method==='GET'&&pav){if(!findVoucher(pav[1]))return sendError(res,404,'VOUCHER_NOT_FOUND','Voucher was not found.');return send(res,200,availability(pav[1]))}
+  if(req.method==='OPTIONS') return noContent(res)
+  const url=new URL(req.url,`http://${req.headers.host}`)
+  const path=normalizePath(url.pathname)
+  const body=['POST','PATCH','PUT'].includes(req.method)?await readBody(req):{}
+
+  if(req.method==='GET'&&path==='/') return json(res,200,{ok:true,service:'ohmyselect-backend',persistence:store.db.mode||'memory',docs:'/api/v1/health'})
+  if(req.method==='GET'&&path==='/health') return json(res,200,{ok:true,service:'ohmyselect-backend',persistence:store.db.mode||'memory',time:now()})
+  if(req.method==='GET'&&path==='/cities') return json(res,200,await store.db.all('SELECT id, country_id AS country FROM cities WHERE active = 1 ORDER BY sort_order'))
+  if(req.method==='POST'&&path==='/auth/google'){const user=await store.upsertDemoUser(body.credential||body.idToken,makeId); const token=`demo_${randomUUID()}`; store.rememberToken(token,user); return json(res,200,{accessToken:token,refreshToken:token,token,user:withEffectiveRole(user)})}
+  if(req.method==='GET'&&(path==='/auth/me'||path==='/me')){const user=await requireUser(req,res); if(!user)return; return json(res,200,withEffectiveRole(user))}
+  if(req.method==='POST'&&path==='/auth/logout') return noContent(res)
+  if(req.method==='GET'&&path==='/memberships') return json(res,200,await store.memberships(url.searchParams))
+  if(req.method==='GET'&&path==='/memberships/compare'){const ids=(url.searchParams.get('ids')||'').split(',').filter(Boolean); return json(res,200,await store.compare(ids))}
+  const membershipVoucherMatch=path.match(/^\/memberships\/([^/]+)\/vouchers$/)
+  if(req.method==='GET'&&membershipVoucherMatch) return json(res,200,await store.voucherTemplates(membershipVoucherMatch[1]))
+  const membershipMatch=path.match(/^\/memberships\/([^/]+)$/)
+  if(req.method==='GET'&&membershipMatch){const membership=await store.membership(membershipMatch[1]); if(!membership)return error(res,404,'MEMBERSHIP_NOT_FOUND','Membership was not found.'); return json(res,200,{...membership,vouchers:await store.voucherTemplates(membership.id)})}
+  const publicAvailabilityMatch=path.match(/^\/vouchers\/([^/]+)\/availability$/)
+  if(req.method==='GET'&&publicAvailabilityMatch){const rule=await store.voucherAvailability(publicAvailabilityMatch[1]); if(!rule)return error(res,404,'VOUCHER_NOT_FOUND','Voucher was not found.'); return json(res,200,rule)}
 
   if(path.startsWith('/admin/')){
-    const admin=requireBackoffice(req,res);if(!admin)return
-    if(req.method==='GET'&&path==='/admin/me')return send(res,200,{user:admin,role:admin.role,permissions:admin.role==='admin'?['read','catalog:write','settlement:write','reservation:write','assistance:write']:['read','reservation:write','assistance:write']})
-    if(req.method==='GET'&&path==='/admin/dashboard')return send(res,200,dashboard())
-    if(req.method==='GET'&&path==='/admin/audit-logs')return send(res,200,page(auditLogs,url.searchParams))
-    if(req.method==='GET'&&path==='/admin/users')return send(res,200,page([...usersBySubject.values()].map(u=>({...u,membershipsCount:userState(u.id).savedMemberships.length})),url.searchParams))
-    const au=path.match(/^\/admin\/users\/([^/]+)$/);if(req.method==='GET'&&au){const u=[...usersBySubject.values()].find(x=>x.id===au[1]);if(!u)return sendError(res,404,'NOT_FOUND','User was not found.');return send(res,200,{user:u,wallet:walletFor(u)})}
-    if(req.method==='GET'&&path==='/admin/memberships')return send(res,200,page(memberships.map(publicMembership),url.searchParams))
-    if(req.method==='POST'&&path==='/admin/memberships'){if(admin.role!=='admin')return sendError(res,403,'ADMIN_REQUIRED','Admin access is required.');if(!body.id||!body.name)return sendError(res,400,'VALIDATION_ERROR','id and name are required.');const m={active:true,cities:[],hotels:[],benefits:[],bestFor:[],scores:{},annualFee:0,currency:'VND',commissionRate:0,...body};memberships.push(m);audit(admin,'create','membership',m.id,null,m);return send(res,201,publicMembership(m))}
-    const amv=path.match(/^\/admin\/memberships\/([^/]+)\/vouchers$/);if(req.method==='GET'&&amv)return send(res,200,getVoucherPack(amv[1]).map(v=>({...v,...voucherUsage(v.templateId)})));if(req.method==='POST'&&amv){if(admin.role!=='admin')return sendError(res,403,'ADMIN_REQUIRED','Admin access is required.');const v={templateId:body.templateId||makeId('tpl'),category:body.category||'other',title:body.title||'Untitled',description:body.description||'',quantity:Number(body.quantity||1),validUntil:body.validUntil||'2026-12-31',hotels:body.hotels||[],transferable:!!body.transferable,note:body.note||''};voucherPacks[amv[1]]??=[];voucherPacks[amv[1]].push(v);audit(admin,'create','voucher',v.templateId,null,v);return send(res,201,v)}
-    const am=path.match(/^\/admin\/memberships\/([^/]+)$/);if(req.method==='GET'&&am){const m=getMembership(am[1],true);if(!m)return sendError(res,404,'MEMBERSHIP_NOT_FOUND','Membership was not found.');return send(res,200,{...publicMembership(m),vouchers:getVoucherPack(m.id)})}if(req.method==='PATCH'&&am){if(admin.role!=='admin')return sendError(res,403,'ADMIN_REQUIRED','Admin access is required.');const m=getMembership(am[1],true);if(!m)return sendError(res,404,'MEMBERSHIP_NOT_FOUND','Membership was not found.');const before={...m};Object.assign(m,body,{id:m.id});audit(admin,'update','membership',m.id,before,m);return send(res,200,publicMembership(m))}if(req.method==='DELETE'&&am){if(admin.role!=='admin')return sendError(res,403,'ADMIN_REQUIRED','Admin access is required.');const m=getMembership(am[1],true);if(!m)return sendError(res,404,'MEMBERSHIP_NOT_FOUND','Membership was not found.');m.active=false;audit(admin,'delete','membership',m.id,null,m);return send(res,200,publicMembership(m))}
-    const ava=path.match(/^\/admin\/vouchers\/([^/]+)\/availability$/);if(req.method==='GET'&&ava)return send(res,200,availability(ava[1]));if(req.method==='PUT'&&ava){if(admin.role!=='admin')return sendError(res,403,'ADMIN_REQUIRED','Admin access is required.');availabilityRules[ava[1]]={daysOfWeek:body.daysOfWeek||ALL_DAYS,minLeadDays:Number(body.minLeadDays||0),maxAdvanceDays:Number(body.maxAdvanceDays||120),blackouts:body.blackouts||[]};audit(admin,'update','availability',ava[1],null,availabilityRules[ava[1]]);return send(res,200,availability(ava[1]))}
-    const avu=path.match(/^\/admin\/vouchers\/([^/]+)\/usage$/);if(req.method==='GET'&&avu)return send(res,200,voucherUsage(avu[1]))
-    const av=path.match(/^\/admin\/vouchers\/([^/]+)$/);if((req.method==='PATCH'||req.method==='DELETE')&&av){if(admin.role!=='admin')return sendError(res,403,'ADMIN_REQUIRED','Admin access is required.');const found=findVoucher(av[1]);if(!found)return sendError(res,404,'VOUCHER_NOT_FOUND','Voucher was not found.');if(req.method==='DELETE'){voucherPacks[found.membershipId]=voucherPacks[found.membershipId].filter(v=>v.templateId!==av[1]);audit(admin,'delete','voucher',av[1],found.v,null);return send(res,200,found.v)}Object.assign(found.v,body,{templateId:found.v.templateId});audit(admin,'update','voucher',av[1],null,found.v);return send(res,200,found.v)}
-    if(req.method==='GET'&&path==='/admin/holidays')return send(res,200,page(holidays.filter(h=>!url.searchParams.get('country')||h.country===url.searchParams.get('country')),url.searchParams))
-    if(req.method==='POST'&&path==='/admin/holidays'){if(admin.role!=='admin')return sendError(res,403,'ADMIN_REQUIRED','Admin access is required.');const h={id:body.id||makeId('hol'),country:body.country,from:body.from,to:body.to,key:body.key,label:body.label||body.key};holidays.push(h);audit(admin,'create','holiday',h.id,null,h);return send(res,201,h)}
-    const ah=path.match(/^\/admin\/holidays\/([^/]+)$/);if((req.method==='PATCH'||req.method==='DELETE')&&ah){if(admin.role!=='admin')return sendError(res,403,'ADMIN_REQUIRED','Admin access is required.');const idx=holidays.findIndex(h=>h.id===ah[1]);if(idx<0)return sendError(res,404,'NOT_FOUND','Holiday was not found.');if(req.method==='DELETE'){const [h]=holidays.splice(idx,1);audit(admin,'delete','holiday',h.id,h,null);return send(res,200,h)}Object.assign(holidays[idx],body);audit(admin,'update','holiday',ah[1],null,holidays[idx]);return send(res,200,holidays[idx])}
-    if(req.method==='GET'&&path==='/admin/orders')return send(res,200,allOrders())
-    if(req.method==='GET'&&path==='/admin/reservations')return send(res,200,allReservations())
-    if(req.method==='GET'&&path==='/admin/assistance-requests')return send(res,200,url.search?page(allAssistance(),url.searchParams):allAssistance())
-    if(req.method==='GET'&&path==='/admin/settlements/summary')return send(res,200,settlementSummary(url.searchParams))
-    if(req.method==='GET'&&path==='/admin/reports/orders.csv')return sendCsv(res,'orders.csv',csv(['id','membershipId','buyerEmail','status','paidAmount','commissionAmount','currency','createdAt'],allOrders()))
-    if(req.method==='GET'&&path==='/admin/reports/settlements.csv'){const s=settlementSummary(url.searchParams);return sendCsv(res,'settlements.csv',csv(['membershipId','gmv','commission','orders'],s.byBrand))}
-    const aos=path.match(/^\/admin\/orders\/([^/]+)\/status$/);if(req.method==='PATCH'&&aos){if(admin.role!=='admin')return sendError(res,403,'ADMIN_REQUIRED','Admin access is required.');const found=findOrder(aos[1]);if(!found)return sendError(res,404,'ORDER_NOT_FOUND','Order was not found.');found.order.status=body.status;found.order.updatedAt=now();if(body.status==='activated'&&!found.state.savedMemberships.includes(found.order.membershipId))found.state.savedMemberships.unshift(found.order.membershipId);audit(admin,'update','order',found.order.id,null,found.order);return send(res,200,found.order)}
-    const ars=path.match(/^\/admin\/reservations\/([^/]+)\/status$/);if(req.method==='PATCH'&&ars){const found=findReservation(ars[1]);if(!found)return sendError(res,404,'RESERVATION_NOT_FOUND','Reservation was not found.');found.reservation.status=body.status;found.reservation.updatedAt=now();audit(admin,'update','reservation',found.reservation.id,null,found.reservation);return send(res,200,found.reservation)}
-    const aar=path.match(/^\/admin\/assistance-requests\/([^/]+)$/);if(req.method==='PATCH'&&aar){const item=findAssistance(aar[1]);if(!item)return sendError(res,404,'ASSISTANCE_REQUEST_NOT_FOUND','Assistance request was not found.');item.status=body.status||item.status;item.adminNote=body.adminNote??item.adminNote??'';item.updatedAt=now();audit(admin,'update','assistance',item.id,null,item);return send(res,200,item)}
-    return sendError(res,404,'NOT_FOUND','Endpoint was not found.')
+    const admin=await requireBackoffice(req,res); if(!admin)return
+    if(req.method==='GET'&&path==='/admin/me') return json(res,200,await store.adminMe(admin,admin.role))
+    if(req.method==='GET'&&path==='/admin/dashboard') return json(res,200,await store.dashboard(url.searchParams))
+    if(req.method==='GET'&&path==='/admin/audit-logs') return json(res,200,await store.auditLogs(url.searchParams))
+    if(req.method==='GET'&&path==='/admin/users') return json(res,200,await store.adminUsers(url.searchParams))
+    const adminUserMatch=path.match(/^\/admin\/users\/([^/]+)$/)
+    if(req.method==='GET'&&adminUserMatch){const user=await store.adminUser(adminUserMatch[1]); if(!user)return error(res,404,'NOT_FOUND','User was not found.'); return json(res,200,user)}
+    if(req.method==='GET'&&path==='/admin/memberships') return json(res,200,await store.adminMemberships(url.searchParams))
+    if(req.method==='POST'&&path==='/admin/memberships'){if(admin.role!=='admin')return error(res,403,'ADMIN_REQUIRED','Admin access is required.'); try{return json(res,201,await store.createMembership(body,admin))}catch(err){return error(res,statusFor(err.code),err.code||'INTERNAL_ERROR',err.message,err.details)}}
+    const adminMembershipVoucherMatch=path.match(/^\/admin\/memberships\/([^/]+)\/vouchers$/)
+    if(req.method==='GET'&&adminMembershipVoucherMatch) return json(res,200,await store.adminVouchers(adminMembershipVoucherMatch[1]))
+    if(req.method==='POST'&&adminMembershipVoucherMatch){if(admin.role!=='admin')return error(res,403,'ADMIN_REQUIRED','Admin access is required.'); try{return json(res,201,await store.createVoucher(adminMembershipVoucherMatch[1],body,admin))}catch(err){return error(res,statusFor(err.code),err.code||'INTERNAL_ERROR',err.message,err.details)}}
+    const adminMembershipMatch=path.match(/^\/admin\/memberships\/([^/]+)$/)
+    if(req.method==='GET'&&adminMembershipMatch){const membership=await store.adminMembership(adminMembershipMatch[1]); if(!membership)return error(res,404,'MEMBERSHIP_NOT_FOUND','Membership was not found.'); return json(res,200,membership)}
+    if(req.method==='PATCH'&&adminMembershipMatch){if(admin.role!=='admin')return error(res,403,'ADMIN_REQUIRED','Admin access is required.'); try{const membership=await store.updateMembership(adminMembershipMatch[1],body,admin); if(!membership)return error(res,404,'MEMBERSHIP_NOT_FOUND','Membership was not found.'); return json(res,200,membership)}catch(err){return error(res,statusFor(err.code),err.code||'INTERNAL_ERROR',err.message,err.details)}}
+    if(req.method==='DELETE'&&adminMembershipMatch){if(admin.role!=='admin')return error(res,403,'ADMIN_REQUIRED','Admin access is required.'); const membership=await store.deleteMembership(adminMembershipMatch[1],admin); if(!membership)return error(res,404,'MEMBERSHIP_NOT_FOUND','Membership was not found.'); return json(res,200,membership)}
+    const adminVoucherAvailabilityMatch=path.match(/^\/admin\/vouchers\/([^/]+)\/availability$/)
+    if(req.method==='GET'&&adminVoucherAvailabilityMatch){const rule=await store.voucherAvailability(adminVoucherAvailabilityMatch[1]); if(!rule)return error(res,404,'VOUCHER_NOT_FOUND','Voucher was not found.'); return json(res,200,rule)}
+    if(req.method==='PUT'&&adminVoucherAvailabilityMatch){if(admin.role!=='admin')return error(res,403,'ADMIN_REQUIRED','Admin access is required.'); const rule=await store.setVoucherAvailability(adminVoucherAvailabilityMatch[1],body,admin); if(!rule)return error(res,404,'VOUCHER_NOT_FOUND','Voucher was not found.'); return json(res,200,rule)}
+    const adminVoucherUsageMatch=path.match(/^\/admin\/vouchers\/([^/]+)\/usage$/)
+    if(req.method==='GET'&&adminVoucherUsageMatch) return json(res,200,await store.voucherUsage(adminVoucherUsageMatch[1]))
+    const adminVoucherMatch=path.match(/^\/admin\/vouchers\/([^/]+)$/)
+    if(req.method==='PATCH'&&adminVoucherMatch){if(admin.role!=='admin')return error(res,403,'ADMIN_REQUIRED','Admin access is required.'); try{const voucher=await store.updateVoucher(adminVoucherMatch[1],body,admin); if(!voucher)return error(res,404,'VOUCHER_NOT_FOUND','Voucher was not found.'); return json(res,200,voucher)}catch(err){return error(res,statusFor(err.code),err.code||'INTERNAL_ERROR',err.message,err.details)}}
+    if(req.method==='DELETE'&&adminVoucherMatch){if(admin.role!=='admin')return error(res,403,'ADMIN_REQUIRED','Admin access is required.'); const voucher=await store.deleteVoucher(adminVoucherMatch[1],admin); if(!voucher)return error(res,404,'VOUCHER_NOT_FOUND','Voucher was not found.'); return json(res,200,voucher)}
+    if(req.method==='GET'&&path==='/admin/holidays') return json(res,200,await store.holidays(url.searchParams))
+    if(req.method==='POST'&&path==='/admin/holidays'){if(admin.role!=='admin')return error(res,403,'ADMIN_REQUIRED','Admin access is required.'); try{return json(res,201,await store.createHoliday(body,admin))}catch(err){return error(res,statusFor(err.code),err.code||'INTERNAL_ERROR',err.message,err.details)}}
+    const adminHolidayMatch=path.match(/^\/admin\/holidays\/([^/]+)$/)
+    if(req.method==='PATCH'&&adminHolidayMatch){if(admin.role!=='admin')return error(res,403,'ADMIN_REQUIRED','Admin access is required.'); const holiday=await store.updateHoliday(adminHolidayMatch[1],body,admin); if(!holiday)return error(res,404,'NOT_FOUND','Holiday was not found.'); return json(res,200,holiday)}
+    if(req.method==='DELETE'&&adminHolidayMatch){if(admin.role!=='admin')return error(res,403,'ADMIN_REQUIRED','Admin access is required.'); const holiday=await store.deleteHoliday(adminHolidayMatch[1],admin); if(!holiday)return error(res,404,'NOT_FOUND','Holiday was not found.'); return json(res,200,holiday)}
+    if(req.method==='GET'&&path==='/admin/reports/orders.csv') return csv(res,'orders.csv',await store.csvOrders(url.searchParams))
+    if(req.method==='GET'&&path==='/admin/reports/settlements.csv') return csv(res,'settlements.csv',await store.csvSettlements(url.searchParams))
+    if(req.method==='GET'&&path==='/admin/orders') return json(res,200,await store.adminOrders())
+    const adminOrderMatch=path.match(/^\/admin\/orders\/([^/]+)\/status$/)
+    if(req.method==='PATCH'&&adminOrderMatch){try{const order=await store.adminUpdateOrderStatus(adminOrderMatch[1],body.status); if(!order)return error(res,404,'ORDER_NOT_FOUND','Order was not found.'); await store.audit(admin,'update','order',order.id,null,order); return json(res,200,order)}catch(err){return error(res,statusFor(err.code),err.code||'INTERNAL_ERROR',err.message,err.details)}}
+    if(req.method==='GET'&&path==='/admin/reservations') return json(res,200,await store.adminReservations())
+    const adminReservationMatch=path.match(/^\/admin\/reservations\/([^/]+)\/status$/)
+    if(req.method==='PATCH'&&adminReservationMatch){try{const reservation=await store.adminUpdateReservationStatus(adminReservationMatch[1],body.status); if(!reservation)return error(res,404,'RESERVATION_NOT_FOUND','Reservation was not found.'); await store.audit(admin,'update','reservation',reservation.id,null,reservation); return json(res,200,reservation)}catch(err){return error(res,statusFor(err.code),err.code||'INTERNAL_ERROR',err.message,err.details)}}
+    if(req.method==='GET'&&path==='/admin/assistance-requests') return json(res,200, url.search ? await store.adminAssistanceRequests(url.searchParams) : await store.adminAssistanceRequests())
+    const adminAssistanceMatch=path.match(/^\/admin\/assistance-requests\/([^/]+)$/)
+    if(req.method==='PATCH'&&adminAssistanceMatch){const request=await store.adminUpdateAssistanceRequest(adminAssistanceMatch[1],body); if(!request)return error(res,404,'ASSISTANCE_REQUEST_NOT_FOUND','Assistance request was not found.'); await store.audit(admin,'update','assistance',request.id,null,request); return json(res,200,request)}
+    if(req.method==='GET'&&path==='/admin/settlements/summary') return json(res,200,await store.settlement())
+    return error(res,404,'NOT_FOUND','Endpoint was not found.')
   }
 
-  if(req.method==='GET'&&(path==='/wallet'||path==='/me/wallet')){const u=requireUser(req,res);if(!u)return;return send(res,200,walletFor(u))}
-  if(req.method==='POST'&&(path==='/wallet/memberships'||path==='/me/memberships')){const u=requireUser(req,res);if(!u)return;const m=getMembership(body.membershipId);if(!m)return sendError(res,404,'MEMBERSHIP_NOT_FOUND','Membership was not found.');const st=userState(u.id);if(!st.savedMemberships.includes(m.id))st.savedMemberships.unshift(m.id);return send(res,201,walletFor(u))}
-  if(req.method==='GET'&&(path==='/orders'||path==='/me/orders')){const u=requireUser(req,res);if(!u)return;return send(res,200,userState(u.id).orders)}
-  if(req.method==='POST'&&(path==='/orders'||path==='/me/orders')){const u=requireUser(req,res);if(!u)return;const m=getMembership(body.membershipId);if(!m)return sendError(res,404,'MEMBERSHIP_NOT_FOUND','Membership was not found.');const p=publicMembership(m);const o={id:makeId('ord'),membershipId:m.id,buyerName:body.buyerName||u.name,buyerEmail:body.buyerEmail||u.email,buyerPhone:body.buyerPhone||'',city:body.city||m.cities[0],listPrice:m.annualFee,salePrice:m.salePrice,paidAmount:p.paidAmount,currency:m.currency,commissionRate:m.commissionRate||0,commissionAmount:p.commissionAmount,status:'requested',invoiceUrl:null,createdAt:now(),updatedAt:now()};userState(u.id).orders.unshift(o);return send(res,201,o)}
-  if(req.method==='GET'&&(path==='/reservations'||path==='/me/reservations')){const u=requireUser(req,res);if(!u)return;return send(res,200,userState(u.id).reservations)}
-  if(req.method==='POST'&&(path==='/reservations'||path==='/me/reservations')){const u=requireUser(req,res);if(!u)return;const found=findVoucher(body.templateId);if(!found||found.membershipId!==body.membershipId)return sendError(res,404,'VOUCHER_NOT_FOUND','Voucher was not found.');const dateCheck=checkDate(body.membershipId,body.templateId,body.date);if(!dateCheck.ok)return sendError(res,409,'DATE_NOT_AVAILABLE','Date is not available.',dateCheck);const st=userState(u.id), voucher=voucherView(st,body.membershipId,found.v);if(voucher.available<=0)return sendError(res,409,'VOUCHER_NOT_AVAILABLE','No available voucher remains.');const r={id:makeId('res'),membershipId:body.membershipId,templateId:body.templateId,title:found.v.title,date:body.date,adults:Number(body.adults||1),children:Number(body.children||0),childAges:Array.isArray(body.childAges)?body.childAges:[],hotel:body.hotel||'',note:body.note||'',status:'requested',createdAt:now(),updatedAt:now()};st.reservations.unshift(r);return send(res,201,r)}
-  if(req.method==='POST'&&(path==='/assistance'||path==='/assistance-requests')){const u=currentUser(req), st=userState(u?.id||'guest');const item={id:makeId('ast'),userId:u?.id||null,name:body.name||'',contact:body.contact||'',city:body.city||body.cityId||'',membershipId:body.membershipId||null,preferredDate:body.preferredDate||null,adults:Number(body.adults||0),children:Number(body.children||0),requestType:body.requestType||'',message:body.message||'',status:'new',adminNote:'',createdAt:now(),updatedAt:now()};st.assistance.unshift(item);return send(res,201,item)}
-  if(req.method==='GET'&&(path==='/settlements/summary'||path==='/partner/settlement'))return send(res,200,settlementSummary(url.searchParams))
-  if(req.method==='POST'&&path==='/recommendations/quiz')return send(res,200,memberships.map(m=>({membership:publicMembership(m),score:m.scores.overall,reasons:[]})).sort((a,b)=>b.score-a.score).slice(0,3))
-  return sendError(res,404,'NOT_FOUND','Endpoint was not found.')
+  if(req.method==='GET'&&(path==='/me/wallet'||path==='/wallet')){const user=await requireUser(req,res); if(!user)return; return json(res,200,await store.wallet(user.id))}
+  if(req.method==='POST'&&(path==='/me/memberships'||path==='/wallet/memberships')){const user=await requireUser(req,res); if(!user)return; if(!(await store.addMembership(user.id,body.membershipId,body.source||'free_join')))return error(res,404,'MEMBERSHIP_NOT_FOUND','Membership was not found.'); return json(res,201,await store.wallet(user.id))}
+  const ownedMembershipMatch=path.match(/^\/me\/memberships\/([^/]+)$/)||path.match(/^\/wallet\/memberships\/([^/]+)$/)
+  if(req.method==='DELETE'&&ownedMembershipMatch){const user=await requireUser(req,res); if(!user)return; await store.removeMembership(user.id,ownedMembershipMatch[1]); return noContent(res)}
+  if(req.method==='GET'&&path==='/wallet/vouchers'){const user=await requireUser(req,res); if(!user)return; const category=url.searchParams.get('category'), membershipId=url.searchParams.get('membershipId'); let vouchers=(await store.wallet(user.id)).vouchers; if(membershipId)vouchers=vouchers.filter(v=>v.membershipId===membershipId); if(category&&category!=='all')vouchers=vouchers.filter(v=>v.category===category); return json(res,200,vouchers)}
+
+  if(req.method==='GET'&&(path==='/me/reservations'||path==='/reservations')){const user=await requireUser(req,res); if(!user)return; return json(res,200,await store.reservations(user.id))}
+  if(req.method==='POST'&&(path==='/me/reservations'||path==='/reservations')){const user=await requireUser(req,res); if(!user)return; try{return json(res,201,await store.createReservation(user.id,body,makeId))}catch(err){return error(res,statusFor(err.code),err.code||'INTERNAL_ERROR',err.message)}}
+  const reservationMatch=path.match(/^\/me\/reservations\/([^/]+)$/)||path.match(/^\/reservations\/([^/]+)$/)||path.match(/^\/reservations\/([^/]+)\/status$/)
+  if(reservationMatch){const user=await requireUser(req,res); if(!user)return; const id=reservationMatch[1]; if(req.method==='PATCH'){try{const reservation=await store.updateReservationStatus(user.id,id,body.status); if(!reservation)return error(res,404,'RESERVATION_NOT_FOUND','Reservation was not found.'); return json(res,200,reservation)}catch(err){return error(res,statusFor(err.code),err.code||'INTERNAL_ERROR',err.message)}} if(req.method==='DELETE'){await store.deleteReservation(user.id,id); return noContent(res)}}
+
+  if(req.method==='GET'&&(path==='/me/orders'||path==='/orders')){const user=await requireUser(req,res); if(!user)return; return json(res,200,await store.orders(user.id))}
+  if(req.method==='POST'&&(path==='/me/orders'||path==='/orders')){const user=await requireUser(req,res); if(!user)return; const order=await store.createOrder(user.id,body,user,makeId); if(!order)return error(res,404,'MEMBERSHIP_NOT_FOUND','Membership was not found.'); return json(res,201,order)}
+  const orderMatch=path.match(/^\/me\/orders\/([^/]+)$/)||path.match(/^\/orders\/([^/]+)$/)||path.match(/^\/orders\/([^/]+)\/status$/)
+  if(req.method==='PATCH'&&orderMatch){const user=await requireUser(req,res); if(!user)return; try{const order=await store.updateOrderStatus(user.id,orderMatch[1],body.status); if(!order)return error(res,404,'ORDER_NOT_FOUND','Order was not found.'); return json(res,200,order)}catch(err){return error(res,statusFor(err.code),err.code||'INTERNAL_ERROR',err.message)}}
+
+  if(req.method==='GET'&&(path==='/me/transfers'||path==='/transfers')){const user=await requireUser(req,res); if(!user)return; return json(res,200,await store.transfers(user.id))}
+  if(req.method==='POST'&&(path==='/me/transfers'||path==='/transfers')){const user=await requireUser(req,res); if(!user)return; try{return json(res,201,await store.createTransfer(user.id,body,makeId))}catch(err){return error(res,statusFor(err.code),err.code||'INTERNAL_ERROR',err.message)}}
+  if(req.method==='GET'&&(path==='/partner/settlement'||path==='/settlements/summary')) return json(res,200,await store.settlement())
+  if(req.method==='POST'&&(path==='/assistance'||path==='/assistance-requests')){const user=await currentUser(req); return json(res,201,await store.createAssistance(body,makeId,user?.id||null))}
+  if(req.method==='POST'&&path==='/recommendations/quiz'){const city=body.city, benefits=Array.isArray(body.benefits)?body.benefits:[]; const ranked=(await store.memberships(new URLSearchParams())).map(m=>{let score=m.scores.overall||0; if(city&&m.cities.includes(city))score+=15; for(const b of benefits)if(m.bestFor.includes(b))score+=10; if(body.budget==='free_only'&&m.annualFee>0)score-=25; return {membership:m,score,reasons:[...(city&&m.cities.includes(city)?['city_match']:[]),...benefits.filter(b=>m.bestFor.includes(b)).map(b=>`benefit_${b}`)]}}).sort((a,b)=>b.score-a.score).slice(0,3); return json(res,200,ranked)}
+  return error(res,404,'NOT_FOUND','Endpoint was not found.')
 }
-function findOrder(id){for(const st of allStates()){const order=st.orders.find(o=>o.id===id);if(order)return{order,state:st}}return null}
-function findReservation(id){for(const st of allStates()){const reservation=st.reservations.find(r=>r.id===id);if(reservation)return{reservation,state:st}}return null}
-function findAssistance(id){for(const st of allStates()){const item=(st.assistance||[]).find(a=>a.id===id);if(item)return item}return null}
-function voucherUsage(templateId){const found=findVoucher(templateId);let used=0,held=0,transferred=0;for(const st of allStates()){used+=Object.entries(st.usage).filter(([k])=>k.endsWith(`:${templateId}`)).reduce((s,[,v])=>s+v,0);held+=st.reservations.filter(r=>r.templateId===templateId&&['requested','confirmed'].includes(r.status)).length;transferred+=st.transfers.filter(t=>t.templateId===templateId).length}const issued=found?.v?.quantity||0;return{issued,used,held,transferred,available:Math.max(0,issued-used-held-transferred)}}
-async function handle(req,res){await route(req,res);if(['POST','PATCH','DELETE','PUT'].includes(req.method))await saveSnapshot()}
-await initPersistence()
-const server=http.createServer((req,res)=>{handle(req,res).catch(err=>{console.error(err);sendError(res,500,'INTERNAL_ERROR','Unexpected server error.')})})
-server.listen(PORT,'0.0.0.0',()=>console.log(`StayEasy backend listening on http://0.0.0.0:${PORT}`))
+
+const server=http.createServer((req,res)=>{route(req,res).catch(err=>{console.error(err); error(res,500,'INTERNAL_ERROR','Unexpected server error.')})})
+server.listen(PORT,'0.0.0.0',()=>{console.log(`OhmySelect backend listening on http://0.0.0.0:${PORT}`)})
