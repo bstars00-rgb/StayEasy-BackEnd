@@ -174,7 +174,24 @@ export class OhmySelectStore {
     const store = new OhmySelectStore(db)
     await store.migrate(); await store.seed(); return store
   }
+  // Our tables, child-before-parent (safe DROP order even without CASCADE).
+  static TABLES = ['audit_logs','assistance_requests','transfers','orders','reservations','voucher_usage','user_memberships','holidays','voucher_availability','voucher_template_hotels','voucher_templates','membership_scores','membership_tags','membership_hotels','membership_cities','memberships','cities','users']
+  // A legacy Supabase schema declared flag columns as boolean and JSON columns
+  // as jsonb/timestamptz; this code uses integer/text. If we detect that shape,
+  // drop our tables so CREATE TABLE rebuilds them canonically. Safe: the live
+  // app persisted only to app_state, never these tables, and the new backend
+  // has not stored data yet. One-time + idempotent (skips once active is integer).
+  async resetLegacySchemaIfNeeded() {
+    if (this.db.mode !== 'postgres') return
+    const col = await this.db
+      .get("SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='memberships' AND column_name='active'")
+      .catch(() => null)
+    if (!col || col.data_type === 'integer') return
+    console.warn(`[migrate] legacy schema detected (memberships.active=${col.data_type}); rebuilding normalized tables`)
+    for (const t of OhmySelectStore.TABLES) await this.db.run(`DROP TABLE IF EXISTS ${t} CASCADE`).catch(() => {})
+  }
   async migrate() {
+    await this.resetLegacySchemaIfNeeded()
     await this.db.exec(`
       CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, provider TEXT NOT NULL, provider_subject TEXT NOT NULL UNIQUE, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, picture_url TEXT, role TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS cities (id TEXT PRIMARY KEY, country_id TEXT NOT NULL, name_en TEXT, sort_order INTEGER DEFAULT 0, active INTEGER DEFAULT 1);
